@@ -21,6 +21,7 @@ import {
 } from '../data/initialData';
 import { generateBergerSchedule } from '../utils/berger';
 import { FullBackupData } from '../utils/exportImport';
+import { supabaseService } from '../services/supabaseService';
 
 export interface ToastInfo {
   id: string;
@@ -37,8 +38,10 @@ interface DataContextType {
   announcements: Announcement[];
   rules: RuleChapter[];
   toasts: ToastInfo[];
+  isSupabaseConnected: boolean;
   showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   removeToast: (id: string) => void;
+  syncToSupabase: () => Promise<boolean>;
 
   // Leagues
   addLeague: (league: Omit<League, 'id'>) => boolean;
@@ -105,6 +108,7 @@ const STORAGE_KEYS = {
 
 export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<ToastInfo[]>([]);
+  const [isSupabaseConnected, setIsSupabaseConnected] = useState(false);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
     const id = Date.now().toString() + Math.random().toString();
@@ -139,6 +143,50 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
   const [rules, setRules] = useState<RuleChapter[]>(() => loadState(STORAGE_KEYS.RULES, INITIAL_RULES));
 
+  // Load from Supabase on mount if available
+  useEffect(() => {
+    async function loadFromSupabase() {
+      const connected = await supabaseService.isConnected();
+      setIsSupabaseConnected(connected);
+
+      if (connected) {
+        const cloudData = await supabaseService.loadAllData();
+        if (cloudData && cloudData.teams.length > 0) {
+          if (cloudData.season) setSeason(cloudData.season);
+          if (cloudData.leagues.length > 0) setLeagues(cloudData.leagues);
+          if (cloudData.teams.length > 0) setTeams(cloudData.teams);
+          if (cloudData.players.length > 0) setPlayers(cloudData.players);
+          if (cloudData.matches.length > 0) setMatches(cloudData.matches);
+          if (cloudData.announcements.length > 0) setAnnouncements(cloudData.announcements);
+          if (cloudData.rules.length > 0) setRules(cloudData.rules);
+        }
+      }
+    }
+
+    loadFromSupabase();
+  }, []);
+
+  // Sync state to Supabase manually or automatically
+  const syncToSupabase = async (): Promise<boolean> => {
+    const success = await supabaseService.syncAllToSupabase({
+      season,
+      leagues,
+      teams,
+      players,
+      matches,
+      announcements,
+      rules
+    });
+
+    if (success) {
+      setIsSupabaseConnected(true);
+      showToast('Vsi podatki so bili uspešno sinhronizirani v Supabase!');
+    } else {
+      showToast('Napaka pri sinhronizaciji v Supabase. Preverite, ali je bila zagnana SQL shema.', 'error');
+    }
+    return success;
+  };
+
   // Persistence effects
   useEffect(() => { localStorage.setItem(STORAGE_KEYS.SEASON, JSON.stringify(season)); }, [season]);
   useEffect(() => { localStorage.setItem(STORAGE_KEYS.LEAGUES, JSON.stringify(leagues)); }, [leagues]);
@@ -164,7 +212,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const deleteLeague = (id: string): boolean => {
-    // Check if league has teams
     const hasTeams = teams.some(t => t.leagueId === id);
     if (hasTeams) {
       showToast('Lige ni mogoče izbrisati, ker vsebuje ekipe!', 'error');
@@ -177,7 +224,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // TEAMS
   const addTeam = (teamData: Omit<Team, 'id'>): boolean => {
-    // Validate duplicate team name in same league
     const duplicate = teams.some(
       t => t.leagueId === teamData.leagueId &&
            t.name.trim().toLowerCase() === teamData.name.trim().toLowerCase()
@@ -215,7 +261,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const deleteTeam = (id: string): boolean => {
-    // Delete team and its players, remove from matches or block if finished matches exist
     const hasFinishedMatches = matches.some(
       m => (m.homeTeamId === id || m.awayTeamId === id) && m.status === 'finished'
     );
@@ -233,7 +278,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // PLAYERS
   const addPlayer = (playerData: Omit<Player, 'id'>): boolean => {
-    // Validate duplicate jersey number in same team
     const dupNumber = players.some(
       p => p.teamId === playerData.teamId && p.jerseyNumber === playerData.jerseyNumber
     );
@@ -271,7 +315,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const deletePlayer = (id: string): boolean => {
     setPlayers(prev => prev.filter(p => p.id !== id));
-    // Remove player events or keep them marked
     showToast('Igralec je bil izbrisan.');
     return true;
   };
@@ -284,11 +327,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return false;
     }
 
-    // Check jersey number collision in target team
     let newNumber = player.jerseyNumber;
     const numberTaken = players.some(p => p.teamId === targetTeamId && p.jerseyNumber === newNumber);
     if (numberTaken) {
-      // Pick first available number between 2 and 99
       const usedNumbers = new Set(players.filter(p => p.teamId === targetTeamId).map(p => p.jerseyNumber));
       for (let n = 2; n < 100; n++) {
         if (!usedNumbers.has(n)) {
@@ -336,7 +377,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       id: `m-gen-${leagueId}-${Date.now()}-${idx}`
     }));
 
-    // Replace all non-finished matches in this league
     setMatches(prev => {
       const otherMatches = prev.filter(m => m.leagueId !== leagueId);
       return [...otherMatches, ...matchesWithIds];
@@ -394,6 +434,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       return m;
     }));
+
+    // Async sync to Supabase
+    supabaseService.saveMatchScore(matchId, homeScore, awayScore, homeHalftime, awayHalftime, status, notes);
+
     showToast(`Rezultat ${homeScore} : ${awayScore} je bil uspešno shranjen. Lestvica je bila samodejno posodobljena!`);
     return true;
   };
@@ -408,14 +452,12 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setMatches(prev => prev.map(m => {
       if (m.id === matchId) {
         const events = [...(m.events || []), newEvent];
-        // If event is a goal, update score accordingly
         let hScore = m.homeScore ?? 0;
         let aScore = m.awayScore ?? 0;
         if (eventData.type === 'goal' || eventData.type === 'penalty_goal') {
           if (eventData.teamId === m.homeTeamId) hScore += 1;
           else if (eventData.teamId === m.awayTeamId) aScore += 1;
         } else if (eventData.type === 'own_goal') {
-          // Own goal gives point to the other team
           if (eventData.teamId === m.homeTeamId) aScore += 1;
           else hScore += 1;
         }
@@ -429,6 +471,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       return m;
     }));
+
+    // Async sync to Supabase
+    supabaseService.addEvent(newEvent);
 
     showToast('Dogodek na tekmi je bil zabeležen.');
     return true;
@@ -461,6 +506,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       return m;
     }));
+
+    // Async sync to Supabase
+    supabaseService.deleteEvent(eventId);
 
     showToast('Dogodek je bil odstranjen.');
     return true;
@@ -681,8 +729,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         announcements,
         rules,
         toasts,
+        isSupabaseConnected,
         showToast,
         removeToast,
+        syncToSupabase,
         addLeague,
         updateLeague,
         deleteLeague,

@@ -52,7 +52,10 @@ export const AdminPage: React.FC = () => {
     matches,
     announcements,
     rules,
+    toasts,
+    isSupabaseConnected,
     showToast,
+    syncToSupabase,
     addTeam,
     updateTeam,
     deleteTeam,
@@ -339,6 +342,19 @@ export const AdminPage: React.FC = () => {
               <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 uppercase tracking-wide">
                 {getRoleLabel(role)}
               </span>
+              {isSupabaseConnected ? (
+                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                  ⚡ Supabase: Povezano
+                </span>
+              ) : (
+                <button
+                  onClick={() => syncToSupabase()}
+                  className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition-colors"
+                  title="Kliknite za začetno sinhronizacijo v Supabase"
+                >
+                  ⚡ Sinhroniziraj v Supabase
+                </button>
+              )}
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
               Prijavljeni kot: <strong className="text-white">{currentUser?.fullName}</strong> ({currentUser?.username})
